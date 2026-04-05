@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,31 +15,32 @@ var (
 	statsSinceFlag    string
 	statsExerciseFlag string
 	statsJSONFlag     bool
+	statsDetailFlag   bool
 )
 
-// WorkoutStats holds computed stats for a single workout.
-type WorkoutStats struct {
-	Date       string          `json:"date"`
-	Bodyweight float64         `json:"bodyweight"`
-	DurationMin float64        `json:"durationMinutes"`
-	PRCount    int             `json:"prCount"`
-	Exercises  []ExerciseStats `json:"exercises"`
-}
-
-// ExerciseStats holds computed stats for a single exercise within a workout.
-type ExerciseStats struct {
-	Name       string  `json:"name"`
-	Type       string  `json:"type"`
+// SessionStats holds stats for one exercise in one workout.
+type SessionStats struct {
+	Date       string  `json:"date"`
+	Bodyweight float64 `json:"bodyweight"`
 	Sets       int     `json:"sets"`
 	Reps       int     `json:"reps"`
 	BestWeight float64 `json:"bestWeight,omitempty"`
 	BestReps   int     `json:"bestReps,omitempty"`
 	Volume     float64 `json:"volume,omitempty"`
+	Duration   int     `json:"duration,omitempty"`
+	Distance   float64 `json:"distance,omitempty"`
+}
+
+// ExerciseSummary holds all sessions for one exercise.
+type ExerciseSummary struct {
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Sessions []SessionStats `json:"sessions"`
 }
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
-	Short: "Show per-workout statistics",
+	Short: "Show per-exercise statistics across workouts",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.New()
 		var posts []Post
@@ -67,11 +69,20 @@ var statsCmd = &cobra.Command{
 			return nil
 		}
 
-		stats := computeStats(posts)
+		// Sort posts oldest-first
+		sort.Slice(posts, func(i, j int) bool {
+			return posts[i].StartedAt < posts[j].StartedAt
+		})
+
+		summaries := buildSummaries(posts)
 		if statsJSONFlag {
-			return printJSON(stats)
+			return printJSON(summaries)
 		}
-		printStatsText(stats)
+		if statsDetailFlag {
+			printSummariesTextDetail(summaries)
+		} else {
+			printSummariesText(summaries)
+		}
 		return nil
 	},
 }
@@ -81,129 +92,253 @@ func init() {
 	statsCmd.Flags().StringVar(&statsSinceFlag, "since", "", "Filter workouts on or after date (e.g. 2025-01-01, 30d, 4w, 6m, 1y)")
 	statsCmd.Flags().StringVar(&statsExerciseFlag, "exercise", "", "Filter to exercises matching this name (word-prefix match)")
 	statsCmd.Flags().BoolVar(&statsJSONFlag, "json", false, "Output as JSON")
+	statsCmd.Flags().BoolVar(&statsDetailFlag, "detail", false, "Show per-session breakdown")
 }
 
-func computeStats(posts []Post) []WorkoutStats {
-	stats := make([]WorkoutStats, 0, len(posts))
+func buildSummaries(posts []Post) []ExerciseSummary {
+	// Preserve first-seen order
+	orderMap := map[string]int{}
+	dataMap := map[string]*ExerciseSummary{}
+
 	for _, p := range posts {
 		bw, _ := strconv.ParseFloat(strings.TrimSpace(p.Bodyweight), 64)
 		t, _ := time.Parse(time.RFC3339Nano, p.StartedAt)
-
-		ws := WorkoutStats{
-			Date:        t.Format("2006-01-02"),
-			Bodyweight:  bw,
-			DurationMin: parseDurationMin(p.SessionDuration),
-			PRCount:     p.PRCount,
-		}
+		date := t.Format("2006-01-02")
 
 		for _, e := range p.ExerciseData {
-			es := exerciseStats(e, bw)
-			ws.Exercises = append(ws.Exercises, es)
-		}
+			ss := sessionStats(e, bw)
+			ss.Date = date
+			ss.Bodyweight = bw
 
-		stats = append(stats, ws)
+			key := e.ExerciseName
+			if _, exists := dataMap[key]; !exists {
+				dataMap[key] = &ExerciseSummary{
+					Name: e.ExerciseName,
+					Type: e.ExerciseTypes,
+				}
+				orderMap[key] = len(orderMap)
+			}
+			dataMap[key].Sessions = append(dataMap[key].Sessions, ss)
+		}
 	}
-	return stats
+
+	// Sort by first-seen order
+	result := make([]ExerciseSummary, len(dataMap))
+	for key, summary := range dataMap {
+		result[orderMap[key]] = *summary
+	}
+	return result
 }
 
-func exerciseStats(e ExerciseData, bw float64) ExerciseStats {
-	es := ExerciseStats{
-		Name: e.ExerciseName,
-		Type: e.ExerciseTypes,
-	}
+func sessionStats(e ExerciseData, bw float64) SessionStats {
+	ss := SessionStats{}
 
 	for _, s := range e.SetsData {
 		if s.SetType == "warmup" {
 			continue
 		}
-		es.Sets++
+		ss.Sets++
 
 		switch e.ExerciseTypes {
 		case "WR":
 			weight, _ := s.InputOne.Float64()
 			reps, _ := s.InputTwo.Int64()
-			es.Reps += int(reps)
-			es.Volume += weight * float64(reps)
-			if weight > es.BestWeight || (weight == es.BestWeight && int(reps) > es.BestReps) {
-				es.BestWeight = weight
-				es.BestReps = int(reps)
+			ss.Reps += int(reps)
+			ss.Volume += weight * float64(reps)
+			if weight > ss.BestWeight || (weight == ss.BestWeight && int(reps) > ss.BestReps) {
+				ss.BestWeight = weight
+				ss.BestReps = int(reps)
 			}
 		case "AB":
 			assist, _ := s.InputOne.Float64()
 			reps, _ := s.InputTwo.Int64()
 			eff := bw - assist
-			es.Reps += int(reps)
-			es.Volume += eff * float64(reps)
-			if eff > es.BestWeight || (eff == es.BestWeight && int(reps) > es.BestReps) {
-				es.BestWeight = eff
-				es.BestReps = int(reps)
+			ss.Reps += int(reps)
+			ss.Volume += eff * float64(reps)
+			if eff > ss.BestWeight || (eff == ss.BestWeight && int(reps) > ss.BestReps) {
+				ss.BestWeight = eff
+				ss.BestReps = int(reps)
 			}
 		case "BR":
 			added, _ := s.InputOne.Float64()
 			reps, _ := s.InputTwo.Int64()
 			eff := bw + added
-			es.Reps += int(reps)
-			es.Volume += eff * float64(reps)
-			if eff > es.BestWeight || (eff == es.BestWeight && int(reps) > es.BestReps) {
-				es.BestWeight = eff
-				es.BestReps = int(reps)
+			ss.Reps += int(reps)
+			ss.Volume += eff * float64(reps)
+			if eff > ss.BestWeight || (eff == ss.BestWeight && int(reps) > ss.BestReps) {
+				ss.BestWeight = eff
+				ss.BestReps = int(reps)
 			}
 		case "DD":
-			// distance/duration — no weight volume
-			reps, _ := s.InputTwo.Int64()
-			es.Reps += int(reps)
-		case "ND":
-			es.Sets++ // count the set, nothing else to track
+			km, _ := s.InputOne.Float64()
+			secs, _ := s.InputTwo.Int64()
+			ss.Reps += int(secs)
+			ss.Duration += int(secs)
+			ss.Distance += km
 		}
 	}
 
-	return es
+	return ss
 }
 
-func parseDurationMin(s string) float64 {
-	parts := strings.Fields(s)
-	if len(parts) < 6 {
-		return 0
+func printSummariesText(summaries []ExerciseSummary) {
+	for i, ex := range summaries {
+		fmt.Printf("%s — %d sessions\n", ex.Name, len(ex.Sessions))
+
+		switch ex.Type {
+		case "WR", "AB", "BR":
+			printWeightSummary(ex.Sessions)
+		case "DD":
+			printDurationSummary(ex.Sessions)
+		}
+
+		months := monthlyExerciseStats(ex.Sessions, ex.Type)
+		if len(months) > 0 && ex.Type != "ND" {
+			fmt.Println()
+			printExerciseBarGraph(months, ex.Type)
+		}
+
+		if i < len(summaries)-1 {
+			fmt.Println()
+		}
 	}
-	h, _ := strconv.ParseFloat(parts[0], 64)
-	m, _ := strconv.ParseFloat(parts[2], 64)
-	sec, _ := strconv.ParseFloat(parts[4], 64)
-	return h*60 + m + sec/60
 }
 
-func printStatsText(stats []WorkoutStats) {
-	for i, ws := range stats {
-		totalSets, totalReps := 0, 0
-		totalVolume := 0.0
-		for _, e := range ws.Exercises {
-			totalSets += e.Sets
-			totalReps += e.Reps
-			totalVolume += e.Volume
+func printWeightSummary(sessions []SessionStats) {
+	var prIdx int
+	for i, ss := range sessions {
+		if ss.BestWeight > sessions[prIdx].BestWeight ||
+			(ss.BestWeight == sessions[prIdx].BestWeight && ss.BestReps > sessions[prIdx].BestReps) {
+			prIdx = i
 		}
+	}
+	pr := sessions[prIdx]
+	recent := sessions[len(sessions)-1]
 
-		fmt.Printf("%s  BW=%.0f  %0.fm  %d exercises  %d sets  %d reps",
-			ws.Date, ws.Bodyweight, ws.DurationMin,
-			len(ws.Exercises), totalSets, totalReps)
-		if totalVolume > 0 {
-			fmt.Printf("  %.0f lb vol", totalVolume)
-		}
-		if ws.PRCount > 0 {
-			fmt.Printf("  %d PRs", ws.PRCount)
-		}
-		fmt.Println()
+	prDate, _ := time.Parse("2006-01-02", pr.Date)
+	fmt.Printf("  PR:     %.0fx%d (%s)\n", pr.BestWeight, pr.BestReps, prDate.Format("Jan 2006"))
+	fmt.Printf("  Recent: %.0fx%d\n", recent.BestWeight, recent.BestReps)
+}
 
-		for _, e := range ws.Exercises {
-			fmt.Printf("  %-30s  %d sets  %d reps", e.Name, e.Sets, e.Reps)
-			if e.BestWeight > 0 {
-				fmt.Printf("  best=%.0fx%d", e.BestWeight, e.BestReps)
+func printDurationSummary(sessions []SessionStats) {
+	var bestIdx int
+	for i, ss := range sessions {
+		if ss.Duration > sessions[bestIdx].Duration {
+			bestIdx = i
+		}
+	}
+	best := sessions[bestIdx]
+	recent := sessions[len(sessions)-1]
+
+	bestDate, _ := time.Parse("2006-01-02", best.Date)
+	fmt.Printf("  Best:   %s (%s)\n", formatDuration(best.Duration), bestDate.Format("Jan 2006"))
+	fmt.Printf("  Recent: %s\n", formatDuration(recent.Duration))
+}
+
+type monthStat struct {
+	month string
+	value float64
+}
+
+func monthlyExerciseStats(sessions []SessionStats, exType string) []monthStat {
+	monthMap := map[string][]SessionStats{}
+	for _, ss := range sessions {
+		key := ss.Date[:7]
+		monthMap[key] = append(monthMap[key], ss)
+	}
+
+	var months []monthStat
+	for key, mSessions := range monthMap {
+		var val float64
+		switch exType {
+		case "WR", "AB", "BR":
+			for _, ss := range mSessions {
+				if ss.BestWeight > val {
+					val = ss.BestWeight
+				}
 			}
-			if e.Volume > 0 {
-				fmt.Printf("  vol=%.0f", e.Volume)
+		case "DD":
+			for _, ss := range mSessions {
+				val += float64(ss.Duration)
+			}
+		}
+		months = append(months, monthStat{month: key, value: val})
+	}
+
+	sort.Slice(months, func(i, j int) bool {
+		return months[i].month < months[j].month
+	})
+	return months
+}
+
+func printExerciseBarGraph(months []monthStat, exType string) {
+	minVal := months[0].value
+	maxVal := months[0].value
+	for _, m := range months {
+		if m.value < minVal {
+			minVal = m.value
+		}
+		if m.value > maxVal {
+			maxVal = m.value
+		}
+	}
+	chartMin := minVal * 0.9
+
+	// Determine label width for alignment
+	maxLabelLen := 0
+	labels := make([]string, len(months))
+	for i, m := range months {
+		switch exType {
+		case "WR", "AB", "BR":
+			labels[i] = formatWeight(m.value)
+		case "DD":
+			labels[i] = formatDuration(int(m.value))
+		default:
+			labels[i] = fmt.Sprintf("%.0f", m.value)
+		}
+		if len(labels[i]) > maxLabelLen {
+			maxLabelLen = len(labels[i])
+		}
+	}
+
+	fmtStr := fmt.Sprintf("  %%s  %%%ds %%s\n", maxLabelLen)
+	for i, m := range months {
+		barLen := scaledBarLength(m.value, chartMin, maxVal, 40)
+		fmt.Printf(fmtStr, m.month, labels[i], strings.Repeat("█", barLen))
+	}
+}
+
+func formatDuration(totalSecs int) string {
+	if totalSecs >= 3600 {
+		h := totalSecs / 3600
+		m := (totalSecs % 3600) / 60
+		if m == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	m := totalSecs / 60
+	s := totalSecs % 60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+func printSummariesTextDetail(summaries []ExerciseSummary) {
+	for i, ex := range summaries {
+		fmt.Printf("%s — %d sessions\n", ex.Name, len(ex.Sessions))
+		for _, ss := range ex.Sessions {
+			fmt.Printf("  %s  BW=%.0f  %d sets  %d reps", ss.Date, ss.Bodyweight, ss.Sets, ss.Reps)
+			if ss.BestWeight > 0 {
+				fmt.Printf("  %.0fx%d", ss.BestWeight, ss.BestReps)
+			}
+			if ss.Volume > 0 {
+				fmt.Printf("  vol=%.0f", ss.Volume)
 			}
 			fmt.Println()
 		}
-
-		if i < len(stats)-1 {
+		if i < len(summaries)-1 {
 			fmt.Println()
 		}
 	}
