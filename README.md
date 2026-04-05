@@ -50,7 +50,9 @@ liftoff workouts list --json                # Output as JSON
 liftoff workouts list --since 30d           # Filter by relative date (30d, 4w, 6m, 1y)
 liftoff workouts list --since 2025-01-01    # Filter by absolute date
 liftoff workouts list --exercise bench      # Filter to matching exercises
-liftoff workouts show <id>                  # Show a single workout
+liftoff workouts show 2025-03-08            # Show workout(s) for a date
+liftoff workouts show today                 # Show today's workout
+liftoff workouts show yesterday             # Show yesterday's workout
 ```
 
 ### Workout Stats

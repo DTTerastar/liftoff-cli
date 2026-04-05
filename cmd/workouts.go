@@ -113,23 +113,65 @@ func parseSince(s string) (time.Time, error) {
 	}
 }
 
+var showJSONFlag bool
+
 var showCmd = &cobra.Command{
-	Use:   "show <id>",
-	Short: "Show a workout by ID",
+	Use:   "show <date>",
+	Short: "Show workout(s) for a given date (e.g. 2025-03-08, today, yesterday)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c := client.New()
-		var result Post
-		if err := c.Query("post.getFilteredPostById", map[string]any{"postId": args[0]}, &result); err != nil {
+		target, err := parseDate(args[0])
+		if err != nil {
 			return err
 		}
-		return printJSON(result)
+
+		c := client.New()
+		var posts []Post
+		if err := c.Query("post.getMyPosts", nil, &posts); err != nil {
+			return err
+		}
+
+		var matched []Post
+		for _, p := range posts {
+			t, err := time.Parse(time.RFC3339Nano, p.StartedAt)
+			if err != nil {
+				continue
+			}
+			if t.Format("2006-01-02") == target.Format("2006-01-02") {
+				matched = append(matched, p)
+			}
+		}
+
+		if len(matched) == 0 {
+			fmt.Printf("No workouts found for %s.\n", target.Format("January 2, 2006"))
+			return nil
+		}
+
+		if showJSONFlag {
+			return printJSON(matched)
+		}
+		return printFitdown(matched)
 	},
+}
+
+func parseDate(s string) (time.Time, error) {
+	now := time.Now()
+	switch strings.ToLower(s) {
+	case "today":
+		return now, nil
+	case "yesterday":
+		return now.AddDate(0, 0, -1), nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid date: %q (use YYYY-MM-DD, today, or yesterday)", s)
 }
 
 func init() {
 	workoutsCmd.AddCommand(listCmd)
 	workoutsCmd.AddCommand(showCmd)
+	showCmd.Flags().BoolVar(&showJSONFlag, "json", false, "Output as JSON")
 	listCmd.Flags().BoolVar(&listJSONFlag, "json", false, "Output as JSON instead of fitdown")
 	listCmd.Flags().StringVar(&listSinceFlag, "since", "", "Filter workouts on or after date (e.g. 2025-01-01, 30d, 4w, 6m, 1y)")
 	listCmd.Flags().StringVar(&listExerciseFlag, "exercise", "", "Filter to exercises matching this name (word-prefix match)")
