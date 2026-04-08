@@ -8,8 +8,8 @@
 - Top referrers: N/A
 - Top paths: N/A
 
-### Google Search Results
-- "liftoff-export-cli": not found (Google blocked curl request with JS challenge)
-- "liftoff workout export": not found (Google blocked curl request with JS challenge)
-- "liftoff fitness CLI": not found (Google blocked curl request with JS challenge)
-- "export gym app data": not found (Google blocked curl request with JS challenge)
+### Google Search Rankings
+- "liftoff-export-cli": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
+- "liftoff workout export": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
+- "liftoff fitness CLI": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
+- "export gym app data": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
