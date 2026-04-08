@@ -8,8 +8,9 @@
 - Top referrers: N/A
 - Top paths: N/A
 
-### Google Search Rankings
-- "liftoff-export-cli": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
-- "liftoff workout export": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
-- "liftoff fitness CLI": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
-- "export gym app data": API error (Google Custom Search API returned 403 Forbidden — key not authorized from this environment)
+### Google Search Results
+Note: Playwright (chromium headless) was used; Google served reCAPTCHA to all queries. Google Custom Search API also returned 403 Forbidden — results could not be retrieved from this environment.
+- "liftoff-export-cli": unverifiable (Google reCAPTCHA / API 403)
+- "liftoff workout export": unverifiable (Google reCAPTCHA / API 403)
+- "liftoff fitness CLI": unverifiable (Google reCAPTCHA / API 403)
+- "export gym app data": unverifiable (Google reCAPTCHA / API 403)
