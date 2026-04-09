@@ -1,5 +1,16 @@
 # SEO & Traffic Tracking - liftoff-export-cli
 
+## 2026-04-09
+
+### GitHub Traffic (14-day window)
+- GITHUB_TOKEN not configured
+
+### Google Search Rankings
+- "liftoff-export-cli": unverifiable (Google Custom Search API 403 Forbidden)
+- "liftoff workout export": unverifiable (Google Custom Search API 403 Forbidden)
+- "liftoff fitness CLI": unverifiable (Google Custom Search API 403 Forbidden)
+- "export gym app data": unverifiable (Google Custom Search API 403 Forbidden)
+
 ## 2026-04-08
 
 ### GitHub Traffic (14-day window)
