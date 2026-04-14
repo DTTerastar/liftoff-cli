@@ -1,5 +1,16 @@
 # SEO & Traffic Tracking - liftoff-export-cli
 
+## 2026-04-14
+
+### GitHub Traffic (14-day window)
+GITHUB_TOKEN not configured
+
+### Google Search Rankings
+- "liftoff-export-cli": API error (403 Forbidden - invalid key or Search Engine ID)
+- "liftoff workout export": API error (403 Forbidden - invalid key or Search Engine ID)
+- "liftoff fitness CLI": API error (403 Forbidden - invalid key or Search Engine ID)
+- "export gym app data": API error (403 Forbidden - invalid key or Search Engine ID)
+
 ## 2026-04-13
 
 ### GitHub Traffic (14-day window)
