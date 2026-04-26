@@ -17,15 +17,6 @@ I/O
   stdout: data in --format markdown (default; fitdown set notation) or json.
   stderr: errors. Exit 0 on success including empty results.
 
-AUTH
-  liftoff-export auth login           Interactive email/password; tokens cached.
-  liftoff-export auth status          Exit 0 if usable, 1 with reason. No network call.
-  liftoff-export auth refresh|logout
-
-  Liftoff retires version-pinned API hosts. If refresh starts failing
-  with "server is deprecated", set:
-    LIFTOFF_API_BASE=https://vX-Y-Z.api.getgymbros.com
-
 DATE FLAGS  (every subcommand)
   --since VALUE / --until VALUE
   VALUE: today | yesterday | YYYY-MM-DD | Nd/Nw/Nm/Ny
@@ -50,8 +41,8 @@ EXAMPLES
 
 GOTCHAS
   - Workout dates are LOCAL — 11pm workouts bucket on the day you logged them.
-  - API hosts rotate; see LIFTOFF_API_BASE above. 'auth status' won't catch
-    deprecation — the failure surfaces on the next data call.
+  - API hosts rotate; set LIFTOFF_API_BASE=https://vX-Y-Z.api.getgymbros.com
+    if data calls fail with "server is deprecated".
   - Bodyweight is read off Post.bodyweight (the value you entered for that
     workout). No workout that day means no bodyweight that day.
   - 'workouts stats' bins exercises by name. Renaming an exercise in
@@ -62,7 +53,7 @@ var primeCmd = &cobra.Command{
 	Use:   "prime",
 	Short: "Print an LLM-targeted primer (one screen)",
 	Long: `Print a one-screen primer aimed at LLM agents calling this CLI as a tool.
-Covers I/O, auth, the shared date flags, the subcommand menu, and a few jq
+Covers I/O, the shared date flags, the subcommand menu, and a few jq
 recipes. Per the quantcli contract, prime is short — anything that wants
 to grow into a man page belongs in --help on the relevant subcommand or
 in https://github.com/quantcli/common/blob/main/CONTRACT.md.`,
