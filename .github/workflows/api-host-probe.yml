@@ -28,60 +28,125 @@ jobs:
           [ -n "$current" ] || { echo "::error::could not extract defaultAPIBase"; exit 1; }
           echo "current=$current"
 
-          # 0 = live, 1 = deprecated, 2 = no/failed response
+          # probe(host) returns:
+          #   0 = healthy: backend rejects our deliberately-invalid token with a
+          #       token-validation message (e.g. "Session not found", "invalid",
+          #       "expired", "unauthorized"). That's what a working host says.
+          #   1 = deprecated: response body contains "deprecated"
+          #   2 = broken/transient: anything else (500 "database is unreachable",
+          #       no response, network error, surprise message)
+          # The earlier version of this probe used HTTP status as the
+          # discriminator and got fooled in May 2026: Liftoff's tRPC layer wraps
+          # ALL errors as httpStatus 500, so 500 doesn't mean "broken". The real
+          # signal is the message text, and a broken backend (v2-12-5 was
+          # returning "database is unreachable") is in the same status class as
+          # a healthy one rejecting bad creds.
           probe() {
             local body
             body=$(curl -sS -m 10 "${1}/api/trpc/user.refreshToken?batch=1&input=%7B%220%22%3A%7B%22json%22%3A%22invalid%22%7D%7D" 2>/dev/null) || return 2
             [ -n "$body" ] || return 2
-            echo "$body" | grep -qi "server is deprecated" && return 1
-            return 0
+            if echo "$body" | grep -qi "deprecated"; then
+              return 1
+            fi
+            if echo "$body" | grep -qiE "session not found|invalid|expired|unauthor"; then
+              return 0
+            fi
+            return 2
           }
 
+          # Probe the current host first; bail early if it's still healthy.
           set +e
           probe "$current"
           rc=$?
           set -e
           if [ $rc -eq 0 ]; then
-            echo "no-op: $current still live"
+            echo "no-op: $current still healthy"
             exit 0
           fi
           if [ $rc -eq 2 ]; then
-            echo "::warning::current host $current did not respond — leaving as-is"
+            echo "::warning::current host $current returned 500 / no response — leaving as-is, will retry tomorrow"
             exit 0
           fi
+          echo "current host is deprecated, finding replacement"
 
-          echo "current host is deprecated, scanning candidates"
-          ver=$(echo "$current" | grep -oE 'v[0-9]+-[0-9]+-[0-9]+')
-          maj=${ver#v}; maj=${maj%%-*}
-          rest=${ver#v*-}; min=${rest%%-*}; patch=${rest#*-}
-
+          # Primary discovery: ask the App Store what the current iOS app
+          # version is. The host name mirrors the app version exactly
+          # (2.13.10 → v2-13-10). If the iTunes lookup succeeds and the
+          # derived host is healthy, use it.
           live=""
           lver=""
-          for spec in \
-            "$maj $min $((patch+1))" "$maj $min $((patch+2))" "$maj $min $((patch+3))" \
-            "$maj $((min+1)) 0" "$maj $((min+1)) 1" "$maj $((min+1)) 2" "$maj $((min+1)) 3" \
-            "$maj $((min+2)) 0" "$maj $((min+2)) 1" "$((maj+1)) 0 0"; do
-            read M m p <<< "$spec"
-            host="https://v${M}-${m}-${p}.api.getgymbros.com"
-            set +e
-            probe "$host"
-            prc=$?
-            set -e
-            if [ $prc -eq 0 ]; then
-              live="$host"
-              lver="v${M}-${m}-${p}"
-              break
+          if itunes=$(curl -sS -m 10 'https://itunes.apple.com/lookup?id=6448081563&country=us' 2>/dev/null) && [ -n "$itunes" ]; then
+            ios_ver=$(echo "$itunes" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["results"][0] if d["results"] else {}; print(r.get("version",""))')
+            if [ -n "$ios_ver" ]; then
+              ios_host_ver="v$(echo "$ios_ver" | tr . -)"
+              ios_host="https://${ios_host_ver}.api.getgymbros.com"
+              echo "iOS app version: $ios_ver → trying $ios_host"
+              set +e
+              probe "$ios_host"
+              prc=$?
+              set -e
+              if [ $prc -eq 0 ]; then
+                live="$ios_host"
+                lver="$ios_host_ver"
+                echo "iTunes-derived host is healthy"
+              else
+                echo "iTunes-derived host returned rc=$prc; falling back to sweep"
+              fi
             fi
-          done
+          fi
+
+          # Fallback sweep. Same idea as before but a broader candidate window
+          # (minor+1 patches 0..15, minor+2 0..5, major+1 0..2) and the new
+          # health predicate. We pick the highest healthy host found, not the
+          # first, to bias toward "the current production version" rather than
+          # "an old version that's still up".
+          if [ -z "$live" ]; then
+            ver=$(echo "$current" | grep -oE 'v[0-9]+-[0-9]+-[0-9]+')
+            maj=${ver#v}; maj=${maj%%-*}
+            rest=${ver#v*-}; min=${rest%%-*}; patch=${rest#*-}
+
+            # Build candidate list: same minor (patch+1..15), then minor+1 (0..15), minor+2 (0..5), major+1 (0..2)
+            candidates=()
+            for p in $(seq $((patch+1)) $((patch+15))); do candidates+=("$maj $min $p"); done
+            for p in $(seq 0 15); do candidates+=("$maj $((min+1)) $p"); done
+            for p in $(seq 0 5); do candidates+=("$maj $((min+2)) $p"); done
+            for p in $(seq 0 2); do candidates+=("$((maj+1)) 0 $p"); done
+
+            best=""
+            best_M=0; best_m=0; best_p=0
+            for spec in "${candidates[@]}"; do
+              read M m p <<< "$spec"
+              host="https://v${M}-${m}-${p}.api.getgymbros.com"
+              set +e
+              probe "$host"
+              prc=$?
+              set -e
+              if [ $prc -eq 0 ]; then
+                # Track the highest healthy version (lex-compare M,m,p tuples).
+                if [ $M -gt $best_M ] || \
+                   { [ $M -eq $best_M ] && [ $m -gt $best_m ]; } || \
+                   { [ $M -eq $best_M ] && [ $m -eq $best_m ] && [ $p -gt $best_p ]; }; then
+                  best="$host"
+                  lver="v${M}-${m}-${p}"
+                  best_M=$M; best_m=$m; best_p=$p
+                fi
+              fi
+            done
+            live="$best"
+          fi
 
           if [ -z "$live" ]; then
-            echo "::error::no live host found in candidate window (looked at patch+1..3, minor+1, minor+2, major+1)"
+            echo "::error::no healthy host found via iTunes lookup or candidate sweep"
             exit 1
           fi
 
-          echo "found live host: $live"
+          echo "live host: $live ($lver)"
 
-          # Skip if a PR for this version already exists
+          # Skip if the file is already on this version, or a PR for it is open.
+          if [ "$live" = "$current" ]; then
+            echo "default already matches ${lver}, no bump needed"
+            exit 0
+          fi
           if gh pr list --search "auto/bump-api-host-${lver} in:head state:open" --json number --jq 'length' | grep -qv '^0$'; then
             echo "PR already open for ${lver}; skipping"
             exit 0
@@ -100,4 +165,4 @@ jobs:
 
           gh pr create --base main \
             --title "fix(auth): bump default API host to ${lver}" \
-            --body "Automated probe found \`$current\` returns \"server is deprecated\". \`$live\` is currently live. Triggered by \`.github/workflows/api-host-probe.yml\`. Verify with \`LIFTOFF_API_BASE=$live liftoff-export auth refresh\` before merging."
+            --body "Automated probe found \`$current\` returns \"server is deprecated\". \`$live\` is healthy (returns 4xx for an invalid-token probe, the expected response from a working backend). Triggered by \`.github/workflows/api-host-probe.yml\`. Verify with \`LIFTOFF_API_BASE=$live liftoff-export auth refresh\` before merging."
